@@ -79,14 +79,23 @@ class AutonomousAgent:
         "new_objective": "updated goal if needed"
         """
 
-        # 1. Plan & Reflection & Act (LLMに思考させる)
         thought = self.query_llm(f"Current Objective: {self.current_objective}. What is your next move?", system_prompt)
         
         if "act" in thought:
-            # 2. Act & Observe
             observation = self.execute_command(thought["act"])
             
-            # 3. Memory (JSONログ)
+            # --- 修正箇所: エラーハンドリングの追加 ---
+            if "error" in observation:
+                # コマンド実行自体が失敗（例外発生）した場合
+                output_to_log = f"Execution Error: {observation['error']}"
+                print(f"[\033[91mERROR\033[0m] {output_to_log}")
+            else:
+                # コマンドは実行されたが、標準エラー出力がある場合も考慮
+                stdout = observation.get("stdout", "")
+                stderr = observation.get("stderr", "")
+                output_to_log = f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
+
+            # ログ保存用のデータ作成
             turn_data = {
                 "thought": thought,
                 "observation": observation,
@@ -94,10 +103,10 @@ class AutonomousAgent:
             }
             self.save_log(turn_data)
             
-            # コンテキスト（短期記憶）の更新
-            self.context += f"\nCommand: {thought['act']}\nOutput: {observation['stdout']}"
+            # コンテキスト（短期記憶）の更新：エラーもそのままLLMに伝える
+            self.context += f"\nCommand: {thought['act']}\nOutput: {output_to_log}"
+            # ---------------------------------------
             
-            # 新しい目的の更新
             if thought.get("new_objective"):
                 self.current_objective = thought["new_objective"]
                 

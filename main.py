@@ -1,4 +1,5 @@
 import os
+import subprocess
 import json
 import requests
 from datetime import datetime
@@ -53,6 +54,20 @@ class AutonomousAgent:
                 print(f"[\033[91mERROR\033[0m] Slack投稿失敗: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"[\033[91mERROR\033[0m] Slack接続エラー: {e}")
+
+    def execute_command(self, command):
+        """Act: シェルコマンドを実行し、Observe: 結果を返す"""
+        print(f"[\033[92mACT\033[0m] Executing: {command}")
+        try:
+            # sudoパスワードレス設定を想定
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=30)
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.returncode
+            }
+        except Exception as e:
+            return {"error": str(e)}
 
     def create_markdown_summary(self):
         """5ターンの履歴をMarkdown形式の要約に変換し、Slackへ投稿する"""

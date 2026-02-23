@@ -11,14 +11,12 @@ SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
 
 class AutonomousAgent:
     def __init__(self):
-        # ターンごとの詳細な履歴を保持するリスト
         self.history = []
-        # コンテキストの起点となる要約（Markdown形式）
         self.summary_context_md = "# Activity Summary (Initial)\nNo previous activity."
         self.turn_count = 0
         self.max_turns_before_summary = 5
         self.current_objective = "システムの状態を調査し、改善点を見つける"
-
+    
     def query_llm(self, prompt, system_prompt="", force_json=True):
         """Ollamaへの問い合わせ汎用メソッド"""
         payload = {
@@ -36,37 +34,55 @@ class AutonomousAgent:
         except Exception as e:
             return {"error": str(e)}
 
-    def create_markdown_summary(self):
-        """5ターンの履歴をMarkdown形式の要約に変換する"""
-        print("[\033[94mINFO\033[0m] 5ターンに達しました。履歴をMarkdownで要約し、コンテキストを圧縮します。")
+    def post_to_slack(self, title, message):
+        """Slackにメッセージを投稿する"""
+        if not SLACK_WEBHOOK_URL or "XXXX" in SLACK_WEBHOOK_URL:
+            print("[\033[93mWARN\033[0m] Slack Webhook URLが設定されていないため、投稿をスキップします。")
+            return
+
+        # Slack向けのペイロード作成
+        payload = {
+            "text": f"*{title}*\n{message}"
+        }
         
-        # 過去の要約と、今回の5ターン分の履歴を結合
+        try:
+            response = requests.post(SLACK_WEBHOOK_URL, json=payload, timeout=10)
+            if response.status_code == 200:
+                print("[\033[92mINFO\033[0m] Slackに要約を投稿しました。")
+            else:
+                print(f"[\033[91mERROR\033[0m] Slack投稿失敗: {response.status_code} - {response.text}")
+        except Exception as e:
+            print(f"[\033[91mERROR\033[0m] Slack接続エラー: {e}")
+
+    def create_markdown_summary(self):
+        """5ターンの履歴をMarkdown形式の要約に変換し、Slackへ投稿する"""
+        print("[\033[94mINFO\033[0m] 要約を作成中...")
+        
         history_text = "\n".join(self.history)
         prompt = f"""
-        以下の「これまでの要約」と「直近の実行履歴」をもとに、
-        現在のシステム状態と進捗をまとめた新しいMarkdown形式の要約を作成してください。
-        
-        ## これまでの要約:
-        {self.summary_context_md}
-        
+        以下の履歴を元に、現在の状況をMarkdown形式で短く要約してください。
         ## 直近5ターンの実行履歴:
         {history_text}
-        
-        出力は、見出しやリストを用いた簡潔なMarkdown形式にしてください。
         """
         
-        # 要約はJSON形式ではなく、プレーンなMarkdownとして取得
-        summary_md = self.query_llm(prompt, system_prompt="You are a helpful assistant that summarizes technical logs into Markdown.", force_json=False)
+        # Ollamaに要約を依頼 (force_json=False)
+        summary_md = self.query_llm(prompt, system_prompt="You are a professional logger.", force_json=False)
         
-        # メモリ（要約コンテキスト）の入れ替え
+        # 内部メモリ（要約コンテキスト）の更新
         self.summary_context_md = summary_md
-        # 詳細履歴リストをクリア
-        self.history = []
+        self.history = [] # 履歴をリセット
         
-        # デバッグ用にファイルにも保存（任意）
-        with open("memory/last_summary.md", "w") as f:
-            f.write(self.summary_context_md)
+        # --- Slackへ投稿 ---
+        now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        self.post_to_slack(
+            title=f"🤖 AI Agent Report ({now})",
+            message=summary_md
+        )
 
+        # ファイルとしても保存
+        with open(f"memory/summary-{datetime.now().strftime('%H%M%S')}.md", "w") as f:
+            f.write(self.summary_context_md)
+        
     def run_cycle(self):
         self.turn_count += 1
         print(f"\n--- Cycle {self.turn_count}: {self.current_objective} ---")
@@ -113,12 +129,13 @@ if __name__ == "__main__":
     
     # 実験的に3サイクル回す
     history = []
-    for i in range(3):
+    length = 10
+    for i in range(length):
         result = agent.run_cycle()
         if result:
             history.append(result)
         time.sleep(2) # 負荷軽減
     
     # 最後に日記を書いてSlackへ
-    summary = "Completed 3 autonomous cycles. Checked system status and logged results."
-    agent.write_diary(summary)
+    # summary = "Completed 3 autonomous cycles. Checked system status and logged results."
+    # agent.write_diary(summary)

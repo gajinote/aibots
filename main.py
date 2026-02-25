@@ -12,9 +12,22 @@ SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
 
 class AutonomousAgent:
     def __init__(self):
-        self.context = ""  # 短期記憶（対話履歴）
+# 短期記憶: 各ターンの詳細
+        self.history = [] 
+        # 長期記憶: 要約されたMarkdown
+        self.summary_context_md = "# Activity Summary (Initial)\nNo previous activity."
+        
+        # 進行管理
+        self.turn_count = 0 
+        self.max_turns_before_summary = 5
         self.current_objective = "システムの状態を調査し、改善点を見つける"
         
+        # ログ保存用ディレクトリの作成
+        os.makedirs("logs", exist_ok=True)
+        os.makedirs("memory", exist_ok=True)
+        
+        print("[\033[92mSYSTEM\033[0m] Agent initialized and ready.")
+
     def query_llm(self, prompt, system_prompt=""):
         full_prompt = f"{system_prompt}\n\nContext:\n{self.context}\n\nUser: {prompt}"
         payload = {
@@ -67,50 +80,72 @@ class AutonomousAgent:
         payload = {"text": f"🤖 *AI Agent Diary Update*\n{text}"}
         requests.post(SLACK_WEBHOOK_URL, json=payload)
 
-    def run_cycle(self):
-        print(f"\n--- Starting Cycle: {self.current_objective} ---")
+    def analyze_failure(self, command, observation):
+        """Actが失敗した際に、エラーの原因と対策を深く分析させる"""
+        print(f"[\033[91mREPAIR\033[0m] Analyzing failure: {command}")
         
-        system_prompt = """
-        You are an autonomous AI Agent on Ubuntu 24.04. 
-        You must output ONLY a JSON object with these keys: 
-        "plan": "what to do", 
-        "reflection": "why/safety check", 
-        "act": "linux shell command", 
-        "new_objective": "updated goal if needed"
+        prompt = f"""
+        The following command failed. Analyze the error and suggest a fix.
+        
+        # Failed Command
+        `{command}`
+        
+        # Exit Code
+        {observation.get('exit_code')}
+        
+        # Error Output (STDERR)
+        {observation.get('stderr')}
+        
+        # Output (STDOUT)
+        {observation.get('stdout')}
+        
+        Explain why it failed and how to correct it in the next step.
         """
+        
+        # 反省（Reflection）フェーズとしてLLMに分析させる
+        analysis = self.query_llm(prompt, system_prompt="You are a Linux system expert. Analyze the failure precisely.", force_json=False)
+        return analysis
 
-        thought = self.query_llm(f"Current Objective: {self.current_objective}. What is your next move?", system_prompt)
+    def run_cycle(self):
+        self.turn_count += 1
+        print(f"\n--- Cycle {self.turn_count}: {self.current_objective} ---")
+
+        # 1. 思考フェーズ (Plan & Reflection)
+        current_history_text = "\n".join(self.history) if self.history else "None"
+        system_prompt = f"You are an autonomous agent on Ubuntu 24.04. Context:\n{self.summary_context_md}\nHistory:\n{current_history_text}"
+        thought = self.query_llm(f"Current Objective: {self.current_objective}. Next move?", system_prompt)
         
         if "act" in thought:
+            # 2. 実行フェーズ (Act & Observe)
             observation = self.execute_command(thought["act"])
             
-            # --- 修正箇所: エラーハンドリングの追加 ---
-            if "error" in observation:
-                # コマンド実行自体が失敗（例外発生）した場合
-                output_to_log = f"Execution Error: {observation['error']}"
-                print(f"[\033[91mERROR\033[0m] {output_to_log}")
+            # --- 異常検知 & 自己修復パス ---
+            if observation.get("exit_code") != 0:
+                # 失敗した場合、深掘り分析を実行
+                failure_analysis = self.analyze_failure(thought["act"], observation)
+                
+                # 履歴には「コマンド＋エラー＋分析結果」をセットで入れる
+                log_entry = (
+                    f"FAILED Command: {thought['act']}\n"
+                    f"Error: {observation.get('stderr')}\n"
+                    f"Analysis & Fix: {failure_analysis}"
+                )
+                print(f"[\033[93mANALYSIS\033[0m]: {failure_analysis}")
             else:
-                # コマンドは実行されたが、標準エラー出力がある場合も考慮
-                stdout = observation.get("stdout", "")
-                stderr = observation.get("stderr", "")
-                output_to_log = f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
-
-            # ログ保存用のデータ作成
-            turn_data = {
-                "thought": thought,
-                "observation": observation,
-                "timestamp": datetime.now().isoformat()
-            }
-            self.save_log(turn_data)
+                # 成功した場合は通常通り
+                log_entry = f"Command: {thought['act']}\nOutput: {observation.get('stdout', '')[:300]}"
             
-            # コンテキスト（短期記憶）の更新：エラーもそのままLLMに伝える
-            self.context += f"\nCommand: {thought['act']}\nOutput: {output_to_log}"
-            # ---------------------------------------
+            # 短期記憶にこの知見を保存
+            self.history.append(log_entry)
             
+            # 5ターンごとの要約（ここで失敗の分析も圧縮される）
+            if len(self.history) >= self.max_turns_before_summary:
+                self.create_markdown_summary()
+                
             if thought.get("new_objective"):
                 self.current_objective = thought["new_objective"]
-                
-            return turn_data
+            
+            return observation
         return None
 
 # --- メイン実行 ---

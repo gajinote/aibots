@@ -1,6 +1,6 @@
 import os
-import json
 import subprocess
+import json
 import requests
 from datetime import datetime
 import time
@@ -12,36 +12,40 @@ SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
 
 class AutonomousAgent:
     def __init__(self):
-# 短期記憶: 各ターンの詳細
-        self.history = [] 
-        # 長期記憶: 要約されたMarkdown
-        self.summary_context_md = "# Activity Summary (Initial)\nNo previous activity."
-        
         # 進行管理
         self.turn_count = 0 
         self.max_turns_before_summary = 5
         self.current_objective = "システムの状態を調査し、改善点を見つける"
         
-        # ログ保存用ディレクトリの作成
+        # 記憶構造 (context変数は廃止し、こちらに統一しました)
+        self.history = [] 
+        self.summary_context_md = "# Activity Summary (Initial)\nNo previous activity."
+        
+        # ログ保存用
         os.makedirs("logs", exist_ok=True)
         os.makedirs("memory", exist_ok=True)
-        
         print("[\033[92mSYSTEM\033[0m] Agent initialized and ready.")
 
-    def query_llm(self, prompt, system_prompt=""):
-        full_prompt = f"{system_prompt}\n\nContext:\n{self.context}\n\nUser: {prompt}"
+    def query_llm(self, prompt, system_prompt="", force_json=True):
+        """Ollamaへの問い合わせ (self.contextへの参照を削除)"""
+        # system_promptにすでに要約と直近履歴が入る設計にしています
+        full_prompt = f"{system_prompt}\n\nUser: {prompt}"
+        
         payload = {
             "model": MODEL_NAME,
             "prompt": full_prompt,
             "stream": False,
-            "format": "json" # JSONレスポンスを強制
         }
+        if force_json:
+            payload["format"] = "json"
+
         try:
-            response = requests.post(OLLAMA_URL, json=payload)
+            response = requests.post(OLLAMA_URL, json=payload, timeout=60)
             result = response.json()
-            return json.loads(result['response'])
+            raw_response = result['response']
+            return json.loads(raw_response) if force_json else raw_response
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": f"LLM query failed: {str(e)}"}
 
     def execute_command(self, command):
         """Act: シェルコマンドを実行し、Observe: 結果を返す"""
@@ -154,12 +158,12 @@ if __name__ == "__main__":
     
     # 実験的に3サイクル回す
     history = []
-    for i in range(3):
+    for i in range(10):
         result = agent.run_cycle()
         if result:
             history.append(result)
         time.sleep(2) # 負荷軽減
     
     # 最後に日記を書いてSlackへ
-    summary = "Completed 3 autonomous cycles. Checked system status and logged results."
+    summary = "Completed 10 autonomous cycles. Checked system status and logged results."
     agent.write_diary(summary)

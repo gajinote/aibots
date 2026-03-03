@@ -141,6 +141,16 @@ class AutonomousAgent:
             
             # 短期記憶にこの知見を保存
             self.history.append(log_entry)
+
+            # このターンのログをファイルにも保存
+            turn_data = {
+                "turn": self.turn_count,
+                "objective": self.current_objective,
+                "command": thought.get("act"),
+                "log_entry": log_entry,
+                "observation": observation,
+            }
+            self.save_log(turn_data)
             
             # 5ターンごとの要約（ここで失敗の分析も圧縮される）
             if len(self.history) >= self.max_turns_before_summary:

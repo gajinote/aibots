@@ -141,6 +141,7 @@ class AutonomousAgent:
             
             # 短期記憶にこの知見を保存
             self.history.append(log_entry)
+            self.save_log(log_entry)
             
             # 5ターンごとの要約（ここで失敗の分析も圧縮される）
             if len(self.history) >= self.max_turns_before_summary:

@@ -79,6 +79,31 @@ class AutonomousAgent:
         self.post_to_slack(content)
         return content
 
+    def create_markdown_summary(self):
+        """history配列を全て取り出してLLMに要約をさせ、MarkDown書式で保存"""
+        # historyを全て結合
+        history_text = "\n\n".join(self.history)
+        
+        # LLMに要約を依頼
+        prompt = f"Summarize the following history of actions and observations in a concise Markdown format:\n\n{history_text}"
+        summary = self.query_llm(prompt, system_prompt="You are a helpful assistant that summarizes technical logs.", force_json=False)
+        
+        # Markdown形式で保存
+        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        content = f"# Activity Summary {timestamp}\n\n{summary}\n"
+        
+        path = f"memory/diary-{timestamp}.md"
+        with open(path, 'w') as f:
+            f.write(content)
+        
+        # summary_context_mdを更新
+        self.summary_context_md = content
+        
+        # historyをクリア
+        self.history = []
+        
+        print(f"[\033[92mSUMMARY\033[0m] Created summary: {path}")
+
     def post_to_slack(self, text):
         if SLACK_WEBHOOK_URL == "YOUR_WEBHOOK_URL": return
         payload = {"text": f"🤖 *AI Agent Diary Update*\n{text}"}
@@ -116,28 +141,48 @@ class AutonomousAgent:
 
         # 1. 思考フェーズ (Plan & Reflection)
         current_history_text = "\n".join(self.history) if self.history else "None"
-        system_prompt = f"You are an autonomous agent on Ubuntu 24.04. Context:\n{self.summary_context_md}\nHistory:\n{current_history_text}"
+        system_prompt = f"""You are an autonomous agent on Ubuntu 24.04.
+Context:{self.summary_context_md}
+History:{current_history_text}
+IMPORTANT: You MUST respond with a JSON object that includes these fields:
+- "thought": Your reasoning and plan
+- "act": A shell command (System Command) to execute. This field is REQUIRED.
+- "new_objective": (Optional) Updated objective if needed"""
+        
         thought = self.query_llm(f"Current Objective: {self.current_objective}. Next move?", system_prompt)
+        
+        # エラーチェック
+        if "error" in thought:
+            print(f"[\033[91mERROR\033[0m] LLM query failed: {thought['error']}")
+            return None
+        
+        if "act" not in thought:
+            print(f"[\033[91mERROR\033[0m] LLM response missing 'act' field (System Command). Response: {thought}")
+            return None
         
         if "act" in thought:
             # 2. 実行フェーズ (Act & Observe)
-            observation = self.execute_command(thought["act"])
+            system_command = thought["act"]
+            print(f"[\033[94mTHOUGHT\033[0m] {thought.get('thought', '')}")
+            print(f"[\033[94mSYSTEM COMMAND\033[0m] {system_command}")
+            
+            observation = self.execute_command(system_command)
             
             # --- 異常検知 & 自己修復パス ---
             if observation.get("exit_code") != 0:
                 # 失敗した場合、深掘り分析を実行
-                failure_analysis = self.analyze_failure(thought["act"], observation)
+                failure_analysis = self.analyze_failure(system_command, observation)
                 
                 # 履歴には「コマンド＋エラー＋分析結果」をセットで入れる
                 log_entry = (
-                    f"FAILED Command: {thought['act']}\n"
+                    f"FAILED System Command: {system_command}\n"
                     f"Error: {observation.get('stderr')}\n"
                     f"Analysis & Fix: {failure_analysis}"
                 )
                 print(f"[\033[93mANALYSIS\033[0m]: {failure_analysis}")
             else:
                 # 成功した場合は通常通り
-                log_entry = f"Command: {thought['act']}\nOutput: {observation.get('stdout', '')[:300]}"
+                log_entry = f"System Command: {system_command}\nOutput: {observation.get('stdout', '')[:300]}"
             
             # 短期記憶にこの知見を保存
             self.history.append(log_entry)

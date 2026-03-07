@@ -70,7 +70,26 @@ class AutonomousAgent:
     def write_diary(self, activity_summary):
         """長期記憶: 自己反省を含む日記の作成"""
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+        
+        # 最新のdiary-*.mdファイルを探して読み込む
+        latest_diary_content = ""
+        memory_dir = "memory"
+        if os.path.exists(memory_dir):
+            diary_files = [f for f in os.listdir(memory_dir) if f.startswith("diary-") and f.endswith(".md")]
+            if diary_files:
+                # タイムスタンプでソート（降順で最新を取得）
+                diary_files.sort(reverse=True)
+                latest_diary = os.path.join(memory_dir, diary_files[0])
+                try:
+                    with open(latest_diary, 'r') as f:
+                        latest_diary_content = f.read()
+                except Exception as e:
+                    print(f"Warning: Failed to read latest diary file: {str(e)}")
+        
+        # 最新の日記内容を含める
         content = f"# Diary {timestamp}\n\n## Objective\n{self.current_objective}\n\n## Activity\n{activity_summary}\n"
+        if latest_diary_content:
+            content += f"\n## Previous Diary\n{latest_diary_content}\n"
         
         path = f"memory/diary-{timestamp}.md"
         with open(path, 'w') as f:
@@ -186,7 +205,16 @@ IMPORTANT: You MUST respond with a JSON object that includes these fields:
             
             # 短期記憶にこの知見を保存
             self.history.append(log_entry)
-            self.save_log(log_entry)
+
+            # このターンのログをファイルにも保存
+            turn_data = {
+                "turn": self.turn_count,
+                "objective": self.current_objective,
+                "command": thought.get("act"),
+                "log_entry": log_entry,
+                "observation": observation,
+            }
+            self.save_log(turn_data)
             
             # 5ターンごとの要約（ここで失敗の分析も圧縮される）
             if len(self.history) >= self.max_turns_before_summary:

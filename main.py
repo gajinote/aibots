@@ -219,6 +219,7 @@ IMPORTANT: You MUST respond with a JSON object that includes these fields:
             # 5ターンごとの要約（ここで失敗の分析も圧縮される）
             if len(self.history) >= self.max_turns_before_summary:
                 self.create_markdown_summary()
+                self.write_diary(self.summary_context_md) #  要約を日記にも書く
                 
             if thought.get("new_objective"):
                 self.current_objective = thought["new_objective"]
@@ -238,6 +239,3 @@ if __name__ == "__main__":
             history.append(result)
         time.sleep(2) # 負荷軽減
     
-    # 最後に日記を書いてSlackへ
-    summary = "Completed 10 autonomous cycles. Checked system status and logged results."
-    agent.write_diary(summary)

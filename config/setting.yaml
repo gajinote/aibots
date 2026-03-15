@@ -1,0 +1,11 @@
+slack:
+  webhook_url: "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+
+ollama:
+  url: "http://localhost:11434/api/generate"
+  model: "llama3"
+
+blacklist_commands:
+  - "rm -rf /"
+  - "shutdown"
+  - "reboot"

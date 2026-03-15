@@ -4,14 +4,19 @@ import json
 import requests
 from datetime import datetime
 import time
-
-# --- 設定 ---
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL_NAME = "llama3"  # または使用中のモデル名
-SLACK_WEBHOOK_URL = "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
+import yaml
 
 class AutonomousAgent:
     def __init__(self):
+        # 設定読み込み
+        with open('config/setting.yaml', 'r') as f:
+            self.config = yaml.safe_load(f)
+        
+        self.ollama_url = self.config['ollama']['url']
+        self.model_name = self.config['ollama']['model']
+        self.slack_webhook_url = self.config['slack']['webhook_url']
+        self.blacklist_commands = self.config.get('blacklist_commands', [])
+        
         # 進行管理
         self.turn_count = 0 
         self.max_turns_before_summary = 5
@@ -32,7 +37,7 @@ class AutonomousAgent:
         full_prompt = f"{system_prompt}\n\nUser: {prompt}"
         
         payload = {
-            "model": MODEL_NAME,
+            "model": self.model_name,
             "prompt": full_prompt,
             "stream": False,
         }
@@ -40,7 +45,7 @@ class AutonomousAgent:
             payload["format"] = "json"
 
         try:
-            response = requests.post(OLLAMA_URL, json=payload, timeout=60)
+            response = requests.post(self.ollama_url, json=payload, timeout=60)
             result = response.json()
             raw_response = result['response']
             return json.loads(raw_response) if force_json else raw_response
@@ -49,6 +54,11 @@ class AutonomousAgent:
 
     def execute_command(self, command):
         """Act: シェルコマンドを実行し、Observe: 結果を返す"""
+        # ブラックリストチェック
+        for banned in self.blacklist_commands:
+            if banned in command:
+                return {"error": f"Command is blacklisted: {banned}"}
+        
         print(f"[\033[92mACT\033[0m] Executing: {command}")
         try:
             # sudoパスワードレス設定を想定
@@ -124,9 +134,9 @@ class AutonomousAgent:
         print(f"[\033[92mSUMMARY\033[0m] Created summary: {path}")
 
     def post_to_slack(self, text):
-        if SLACK_WEBHOOK_URL == "YOUR_WEBHOOK_URL": return
+        if self.slack_webhook_url == "YOUR_WEBHOOK_URL": return
         payload = {"text": f"🤖 *AI Agent Diary Update*\n{text}"}
-        requests.post(SLACK_WEBHOOK_URL, json=payload)
+        requests.post(self.slack_webhook_url, json=payload)
 
     def analyze_failure(self, command, observation):
         """Actが失敗した際に、エラーの原因と対策を深く分析させる"""

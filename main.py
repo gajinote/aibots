@@ -271,15 +271,69 @@ Examples:
 - "new_objective": (Optional) Updated objective if needed"""
         
         thought = self.query_llm(f"Current Objective: {self.current_objective}. Next move?", system_prompt)
-        
+
         # エラーチェック
         if "error" in thought:
             print(f"[\033[91mERROR\033[0m] LLM query failed: {thought['error']}")
             return None
-        
+
         # LLMが直接ツール指定(dict)を返した場合を許容する
         if "act" not in thought and isinstance(thought, dict) and "tool" in thought:
             thought = {"thought": thought.get("thought", ""), "act": thought}
+
+        # ツール一覧リクエストが繰り返される場合は、内部で再度問い合わせを試みる
+        tool_retry = 0
+        max_tool_retries = 3
+        while isinstance(thought.get("act"), dict) and thought["act"].get("tool") == "list":
+            system_command = thought["act"]
+            print(f"[\033[94mTHOUGHT\033[0m] {thought.get('thought', '')}")
+            print(f"[\033[94mSYSTEM COMMAND\033[0m] {system_command}")
+
+            observation = self.execute_command(system_command)
+            log_entry = f"Tool List: {observation.get('stdout') or observation.get('tools')}"
+            self.history.append(log_entry)
+            self.save_log({
+                "turn": self.turn_count,
+                "objective": self.current_objective,
+                "command": system_command,
+                "log_entry": log_entry,
+                "observation": observation,
+            })
+
+            tool_retry += 1
+            if tool_retry >= max_tool_retries:
+                print(f"[\033[93mWARNING\033[0m] Reached max tool list retries ({max_tool_retries}).")
+                return observation
+
+            # 再度LLMに問い直す
+            current_history_text = "\n".join(self.history) if self.history else "None"
+            system_prompt = f"""You are an autonomous agent on Ubuntu 24.04.
+Context:{self.summary_context_md}
+History:{current_history_text}
+IMPORTANT: You MUST respond with a JSON object that includes these fields:
+- \"thought\": Your reasoning and plan
+- \"act\": Either:
+    1) A shell command string to execute, OR
+    2) A dictionary to invoke an internal tool.
+
+If you choose option (2), use this format:
+{{
+  \"tool\": \"<tool_name>\" | \"list\" | \"save\",
+  \"args\": [\"...\"],          # Optional: args passed to the tool
+  \"name\": \"<tool_name>\",   # Required when tool is \"save\"
+  \"content\": \"<script>\",  # Required when tool is \"save\"
+}}
+
+Examples:
+- {{\"tool\": \"list\"}}  (lists available tools under ./tools/)
+- {{\"tool\": \"my_tool\", \"args\": [\"--help\"]}}
+- {{\"tool\": \"save\", \"name\": \"my_tool.sh\", \"content\": \"#!/bin/bash\necho hi\"}}
+
+- \"new_objective\": (Optional) Updated objective if needed"""
+            thought = self.query_llm(f"Current Objective: {self.current_objective}. Next move?", system_prompt)
+
+            if "act" not in thought and isinstance(thought, dict) and "tool" in thought:
+                thought = {"thought": thought.get("thought", ""), "act": thought}
 
         if "act" not in thought:
             print(f"[\033[91mERROR\033[0m] LLM response missing 'act' field (System Command). Response: {thought}")

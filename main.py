@@ -29,6 +29,7 @@ class AutonomousAgent:
         # ログ保存用
         os.makedirs("logs", exist_ok=True)
         os.makedirs("memory", exist_ok=True)
+        os.makedirs("tools", exist_ok=True)  # ツール保存ディレクトリ
         print("[\033[92mSYSTEM\033[0m] Agent initialized and ready.")
 
     def query_llm(self, prompt, system_prompt="", force_json=True):
@@ -52,9 +53,84 @@ class AutonomousAgent:
         except Exception as e:
             return {"error": f"LLM query failed: {str(e)}"}
 
+    def get_tool_path(self, tool_name):
+        """Return a safe path for a tool under ./tools/ (avoid path traversal)."""
+        safe_name = os.path.basename(tool_name)
+        return os.path.join("tools", safe_name)
+
+    def list_tools(self):
+        """List available tool scripts under ./tools/."""
+        os.makedirs("tools", exist_ok=True)
+        tools = sorted(
+            [f for f in os.listdir("tools") if os.path.isfile(os.path.join("tools", f))]
+        )
+        return {"tools": tools, "exit_code": 0}
+
+    def save_tool(self, tool_name, content, make_executable=True):
+        """Save a tool script under ./tools/."""
+        path = self.get_tool_path(tool_name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+        if make_executable:
+            try:
+                os.chmod(path, os.stat(path).st_mode | 0o111)
+            except Exception as e:
+                print(f"[WARNING] Failed to make tool executable: {e}")
+        return {"tool": tool_name, "path": path, "exit_code": 0}
+
+    def execute_tool(self, tool_name, args=None):
+        """Execute a saved tool script from ./tools/."""
+        args = args or []
+        path = self.get_tool_path(tool_name)
+        if not os.path.exists(path):
+            return {"error": f"Tool not found: {tool_name}"}
+
+        if os.access(path, os.X_OK):
+            cmd = [path] + args
+        else:
+            # Fallback: run by interpreter based on extension
+            if path.endswith(".py"):
+                import sys
+                cmd = [sys.executable, path] + args
+            else:
+                cmd = ["bash", path] + args
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.returncode,
+                "tool": tool_name,
+            }
+        except Exception as e:
+            return {"error": str(e), "tool": tool_name}
+
     def execute_command(self, command):
-        """Act: シェルコマンドを実行し、Observe: 結果を返す"""
-        # ブラックリストチェック
+        """Act: シェルコマンドやツールを実行し、Observe: 結果を返す.
+        command can be:
+          - a string (shell command)
+          - a dict with {"tool": "...", "args": [...]} (execute tool)
+          - a dict with {"tool": "save", "name": "...", "content": "..."} (save new tool)
+          - a dict with {"tool": "list"} (list available tools)
+        """
+        # ツール操作が要求されている場合
+        if isinstance(command, dict):
+            tool_action = command.get("tool")
+            if tool_action == "list":
+                return self.list_tools()
+            if tool_action == "save":
+                name = command.get("name")
+                content = command.get("content", "")
+                executable = command.get("executable", True)
+                return self.save_tool(name, content, make_executable=executable)
+            if tool_action:
+                return self.execute_tool(tool_action, command.get("args", []))
+
+            return {"error": "Invalid tool action dict. Expected keys: tool, args, etc."}
+
+        # ブラックリストチェック (文字列コマンドのみ)
         for banned in self.blacklist_commands:
             if banned in command:
                 return {"error": f"Command is blacklisted: {banned}"}
@@ -175,7 +251,23 @@ Context:{self.summary_context_md}
 History:{current_history_text}
 IMPORTANT: You MUST respond with a JSON object that includes these fields:
 - "thought": Your reasoning and plan
-- "act": A shell command (System Command) to execute. This field is REQUIRED.
+- "act": Either:
+    1) A shell command string to execute, OR
+    2) A dictionary to invoke an internal tool.
+
+If you choose option (2), use this format:
+{{
+  "tool": "<tool_name>" | "list" | "save",
+  "args": ["..."],          # Optional: args passed to the tool
+  "name": "<tool_name>",   # Required when tool is "save"
+  "content": "<script>",  # Required when tool is "save"
+}}
+
+Examples:
+- {{"tool": "list"}}  (lists available tools under ./tools/)
+- {{"tool": "my_tool", "args": ["--help"]}}
+- {{"tool": "save", "name": "my_tool.sh", "content": "#!/bin/bash\necho hi"}}
+
 - "new_objective": (Optional) Updated objective if needed"""
         
         thought = self.query_llm(f"Current Objective: {self.current_objective}. Next move?", system_prompt)
@@ -185,56 +277,60 @@ IMPORTANT: You MUST respond with a JSON object that includes these fields:
             print(f"[\033[91mERROR\033[0m] LLM query failed: {thought['error']}")
             return None
         
+        # LLMが直接ツール指定(dict)を返した場合を許容する
+        if "act" not in thought and isinstance(thought, dict) and "tool" in thought:
+            thought = {"thought": thought.get("thought", ""), "act": thought}
+
         if "act" not in thought:
             print(f"[\033[91mERROR\033[0m] LLM response missing 'act' field (System Command). Response: {thought}")
             return None
-        
-        if "act" in thought:
-            # 2. 実行フェーズ (Act & Observe)
-            system_command = thought["act"]
-            print(f"[\033[94mTHOUGHT\033[0m] {thought.get('thought', '')}")
-            print(f"[\033[94mSYSTEM COMMAND\033[0m] {system_command}")
-            
-            observation = self.execute_command(system_command)
-            
-            # --- 異常検知 & 自己修復パス ---
-            if observation.get("exit_code") != 0:
-                # 失敗した場合、深掘り分析を実行
-                failure_analysis = self.analyze_failure(system_command, observation)
-                
-                # 履歴には「コマンド＋エラー＋分析結果」をセットで入れる
-                log_entry = (
-                    f"FAILED System Command: {system_command}\n"
-                    f"Error: {observation.get('stderr')}\n"
-                    f"Analysis & Fix: {failure_analysis}"
-                )
-                print(f"[\033[93mANALYSIS\033[0m]: {failure_analysis}")
-            else:
-                # 成功した場合は通常通り
-                log_entry = f"System Command: {system_command}\nOutput: {observation.get('stdout', '')[:300]}"
-            
-            # 短期記憶にこの知見を保存
-            self.history.append(log_entry)
 
-            # このターンのログをファイルにも保存
-            turn_data = {
-                "turn": self.turn_count,
-                "objective": self.current_objective,
-                "command": thought.get("act"),
-                "log_entry": log_entry,
-                "observation": observation,
-            }
-            self.save_log(turn_data)
-            
-            # 5ターンごとの要約（ここで失敗の分析も圧縮される）
-            if len(self.history) >= self.max_turns_before_summary:
-                self.create_markdown_summary()
-                self.write_diary(self.summary_context_md) #  要約を日記にも書く
-                
-            if thought.get("new_objective"):
-                self.current_objective = thought["new_objective"]
-            
-            return observation
+        # 2. 実行フェーズ (Act & Observe)
+        system_command = thought["act"]
+        print(f"[\033[94mTHOUGHT\033[0m] {thought.get('thought', '')}")
+        print(f"[\033[94mSYSTEM COMMAND\033[0m] {system_command}")
+
+        observation = self.execute_command(system_command)
+
+        # --- 異常検知 & 自己修復パス ---
+        if observation.get("error") or observation.get("exit_code", 0) != 0:
+            # 失敗した場合、深掘り分析を実行
+            failure_analysis = self.analyze_failure(system_command, observation)
+
+            # 履歴には「コマンド＋エラー＋分析結果」をセットで入れる
+            log_entry = (
+                f"FAILED System Command: {system_command}\n"
+                f"Error: {observation.get('stderr') or observation.get('error')}\n"
+                f"Analysis & Fix: {failure_analysis}"
+            )
+            print(f"[\033[93mANALYSIS\033[0m]: {failure_analysis}")
+        else:
+            # 成功した場合は通常通り
+            log_entry = f"System Command: {system_command}\nOutput: {observation.get('stdout', '')[:300]}"
+
+        # 短期記憶にこの知見を保存
+        self.history.append(log_entry)
+
+        # このターンのログをファイルにも保存
+        turn_data = {
+            "turn": self.turn_count,
+            "objective": self.current_objective,
+            "command": thought.get("act"),
+            "log_entry": log_entry,
+            "observation": observation,
+        }
+        self.save_log(turn_data)
+
+        # 5ターンごとの要約（ここで失敗の分析も圧縮される）
+        if len(self.history) >= self.max_turns_before_summary:
+            self.create_markdown_summary()
+            self.write_diary(self.summary_context_md) #  要約を日記にも書く
+
+        if thought.get("new_objective"):
+            self.current_objective = thought["new_objective"]
+
+        return observation
+
         return None
 
 # --- メイン実行 ---

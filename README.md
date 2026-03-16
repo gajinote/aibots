@@ -21,6 +21,7 @@ Ubuntu 24.04上で動作し、OllamaベースのLLMがシェルコマンドを�
 ├── logs/            # 実行結果のRAWデータ（Turn毎のJSON）
 └── memory/          # 長期記憶
     └── diary-yyyyMMdd-hhmmss.md     # AI自身が執筆する活動記録と次の方針
+└── tools/           # エージェントが保存・実行できる補助スクリプト（ツール）
 
 
 ### Geminiによる提案実装

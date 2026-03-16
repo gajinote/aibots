@@ -3,12 +3,10 @@
 ├── agent/
 │   ├── executor.py      # シェルコマンド実行・フィルタリング
 │   ├── brain.py         # Ollamaとの通信、プロンプト制御
-│   └── memory_manager.py # ベクトルDB（RAG）との連携
 ├── config/
 │   ├── settings.yaml    # Slack APIキー、sudo設定、ブラックリスト
 │   └── prompts.yaml     # System Promptや思考テンプレート
 ├── logs/                # JSONログ
 ├── memory/
 │   ├── diary/           # Markdown形式の日記
-│   └── db/              # ChromaDBなどのベクトルデータ
 └── tools/               # エージェントが使う自作スクリプト（検索、要約等）

@@ -34,6 +34,6 @@ Ubuntu 24.04上で動作する、自律型エージェントの最小構成サ�
 事前準備
 Ollamaの起動: ollama serve が実行され、モデル（例: llama3 や gemma2）がプルされていること。
 
-ライブラリ: `pip install requests`
+ライブラリ: `pip install requests pyyaml`
 
 ディレクトリ作成: `mkdir -p logs memory`

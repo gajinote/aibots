@@ -153,10 +153,22 @@ class AutonomousAgent:
         with open(filename, 'w') as f:
             json.dump(turn_data, f, indent=4)
 
-    def write_diary(self, activity_summary):
-        """長期記憶: 自己反省を含む日記の作成"""
+    def create_summary_diary(self):
+        """Create a single diary file that includes a summary of recent history.
+
+        This replaces the previous two-step flow where we generated a separate
+        markdown summary and then wrote a diary. We now write only one diary file
+        per summary cycle.
+        """
+        # historyを全て結合
+        history_text = "\n\n".join(self.history)
+
+        # LLMに要約を依頼
+        prompt = f"Summarize the following history of actions and observations in a concise Markdown format:\n\n{history_text}"
+        summary = self.query_llm(prompt, system_prompt="You are a helpful assistant that summarizes technical logs.", force_json=False)
+
         timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        
+
         # 最新のdiary-*.mdファイルを探して読み込む
         latest_diary_content = ""
         memory_dir = "memory"
@@ -171,43 +183,26 @@ class AutonomousAgent:
                         latest_diary_content = f.read()
                 except Exception as e:
                     print(f"Warning: Failed to read latest diary file: {str(e)}")
-        
-        # 最新の日記内容を含める
-        content = f"# Diary {timestamp}\n\n## Objective\n{self.current_objective}\n\n## Activity\n{activity_summary}\n"
+
+        # Create single diary document
+        content = f"# Diary {timestamp}\n\n## Objective\n{self.current_objective}\n\n## Activity\n{summary}\n"
         if latest_diary_content:
             content += f"\n## Previous Diary\n{latest_diary_content}\n"
-        
+
         path = f"memory/diary-{timestamp}.md"
         with open(path, 'w') as f:
             f.write(content)
-        
+
+        # summary_context_mdは次の思考フェーズのために要約（summary部分）を保持
+        self.summary_context_md = summary
+
+        # short-term memory clear
+        self.history = []
+
+        print(f"[\033[92mSUMMARY\033[0m] Created diary summary: {path}")
+
         self.post_to_slack(content)
         return content
-
-    def create_markdown_summary(self):
-        """history配列を全て取り出してLLMに要約をさせ、MarkDown書式で保存"""
-        # historyを全て結合
-        history_text = "\n\n".join(self.history)
-        
-        # LLMに要約を依頼
-        prompt = f"Summarize the following history of actions and observations in a concise Markdown format:\n\n{history_text}"
-        summary = self.query_llm(prompt, system_prompt="You are a helpful assistant that summarizes technical logs.", force_json=False)
-        
-        # Markdown形式で保存
-        timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-        content = f"# Activity Summary {timestamp}\n\n{summary}\n"
-        
-        path = f"memory/diary-{timestamp}.md"
-        with open(path, 'w') as f:
-            f.write(content)
-        
-        # summary_context_mdを更新
-        self.summary_context_md = content
-        
-        # historyをクリア
-        self.history = []
-        
-        print(f"[\033[92mSUMMARY\033[0m] Created summary: {path}")
 
     def post_to_slack(self, text):
         if self.slack_webhook_url == "YOUR_WEBHOOK_URL": return
@@ -377,8 +372,7 @@ Examples:
 
         # 5ターンごとの要約（ここで失敗の分析も圧縮される）
         if len(self.history) >= self.max_turns_before_summary:
-            self.create_markdown_summary()
-            self.write_diary(self.summary_context_md) #  要約を日記にも書く
+            self.create_summary_diary()
 
         if thought.get("new_objective"):
             self.current_objective = thought["new_objective"]

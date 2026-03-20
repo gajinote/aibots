@@ -29,7 +29,10 @@ class AutonomousAgent:
         # ログ保存用
         os.makedirs("logs", exist_ok=True)
         os.makedirs("memory", exist_ok=True)
-        os.makedirs("tools", exist_ok=True)  # ツール保存ディレクトリ
+        # ツール保存ディレクトリ: ./tool を優先し、./tools も互換で維持
+        self.tool_directories = ["tool", "tools"]
+        for d in self.tool_directories:
+            os.makedirs(d, exist_ok=True)
         print("[\033[92mSYSTEM\033[0m] Agent initialized and ready.")
 
     def query_llm(self, prompt, system_prompt="", force_json=True):
@@ -54,21 +57,35 @@ class AutonomousAgent:
             return {"error": f"LLM query failed: {str(e)}"}
 
     def get_tool_path(self, tool_name):
-        """Return a safe path for a tool under ./tools/ (avoid path traversal)."""
+        """Return a safe path for a tool under ./tool/ or ./tools/ (avoid path traversal)."""
         safe_name = os.path.basename(tool_name)
-        return os.path.join("tools", safe_name)
+
+        # 既存のツールがあればそのパスを優先
+        for tool_dir in self.tool_directories:
+            candidate = os.path.join(tool_dir, safe_name)
+            if os.path.exists(candidate):
+                return candidate
+
+        # まだ無ければ ./tool に置く
+        return os.path.join(self.tool_directories[0], safe_name)
 
     def list_tools(self):
-        """List available tool scripts under ./tools/."""
-        os.makedirs("tools", exist_ok=True)
-        tools = sorted(
-            [f for f in os.listdir("tools") if os.path.isfile(os.path.join("tools", f))]
-        )
+        """List available tool scripts under ./tool/ and ./tools/."""
+        tools = []
+        for tool_dir in self.tool_directories:
+            if not os.path.isdir(tool_dir):
+                continue
+            for f in os.listdir(tool_dir):
+                path = os.path.join(tool_dir, f)
+                if os.path.isfile(path):
+                    tools.append(f"{tool_dir}/{f}")
+        tools = sorted(tools)
         return {"tools": tools, "exit_code": 0}
 
     def save_tool(self, tool_name, content, make_executable=True):
-        """Save a tool script under ./tools/."""
-        path = self.get_tool_path(tool_name)
+        """Save a tool script under ./tool/ (and/or ./tools/互換)."""
+        save_dir = self.tool_directories[0]
+        path = os.path.join(save_dir, os.path.basename(tool_name))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write(content)

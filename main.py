@@ -336,7 +336,8 @@ Examples:
 
         # 2. 実行フェーズ (Act & Observe)
         system_command = thought["act"]
-        print(f"[\033[94mTHOUGHT\033[0m] {thought.get('thought', '')}")
+        thought_text = thought.get('thought') or f"Selected tool invocation or command: {system_command}"
+        print(f"[\033[94mTHOUGHT\033[0m] {thought_text}")
         print(f"[\033[94mSYSTEM COMMAND\033[0m] {system_command}")
 
         observation = self.execute_command(system_command)
